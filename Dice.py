@@ -7,7 +7,11 @@ import pygame
 import random
 import math
 import sys
+import json
 from enum import Enum
+
+# --- TILEMAP SYSTEM ---
+from tilemap import MapManager
 
 pygame.init()
 pygame.mixer.init()
@@ -104,6 +108,17 @@ def load_spritesheet(path, frame_count, width, height):
             pygame.draw.line(s, (255, 0, 255), (width - 5, 4), (4, height - 5), 3)
             frames.append(s)
     return frames
+
+
+def load_questions():
+    """Load câu hỏi từ file JSON."""
+    try:
+        with open("questions.json", "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data.get("questions", [])
+    except Exception as e:
+        print(f"Lỗi load questions: {e}")
+        return []
 
 
 # ==================== PARTICLES ====================
@@ -609,28 +624,48 @@ HAND_COLORS = {
 # ==================== ENEMY ====================
 
 class Enemy:
-    def __init__(self, level=1):
-        self.max_hp = 60 + level * 25
+    def __init__(self, level=1, boss=False):
+        self.boss = boss
+        self.max_hp = 100 + level * 50 if boss else 60 + level * 25
         self.hp = self.max_hp
         self.x = SCREEN_W // 2
         self.y = 200
         self.frame = 0
         self.hit_timer = 0
         self.level = level
-        self.atk = 5 + level * 3
+        self.atk = 6 + level * 6 if boss else 4+ level * 3
         self.dead = False
         self.death_timer = 0
+        
+        # Debuffs for boss
+        self.stunned = False
+        self.damage_reduction = 1.0
+        self.burn_damage = 0
+        self.bleed_mult = 1.0
+        self.debuff_timers = {}
         
         # --- NẠP SPRITE ---
         # Kích thước khung xương cũ là 80x90
         self.sprite = load_sprite("assets/enemy.png", 80, 90)
+        if boss:
+            self.sprite = pygame.transform.scale(self.sprite, (120, 130))
 
-    def take_damage(self, dmg):
+    def take_damage(self, dmg, game=None):
+        old_hp_percent = self.hp / self.max_hp
         self.hp = max(0, self.hp - dmg)
         self.hit_timer = 12
         if self.hp <= 0:
             self.dead = True
             self.death_timer = 60
+        
+        # Check for boss question milestones
+        if self.boss and game and not self.dead:
+            new_hp_percent = self.hp / self.max_hp
+            for milestone in game.boss_question_milestones:
+                if old_hp_percent > milestone >= new_hp_percent and milestone not in game.boss_questions_asked:
+                    game.boss_questions_asked.append(milestone)
+                    game.trigger_boss_question(milestone)
+                    break
 
     def update(self):
         self.frame += 1
@@ -638,6 +673,34 @@ class Enemy:
             self.hit_timer -= 1
         if self.dead and self.death_timer > 0:
             self.death_timer -= 1
+        
+        # Cập nhật debuffs
+        self.update_debuffs()
+
+    def update_debuffs(self):
+        """Cập nhật các debuff và áp dụng hiệu ứng."""
+        # Burn damage
+        if self.burn_damage > 0:
+            self.hp = max(0, self.hp - self.burn_damage)
+            # Hiển thị damage từ burn
+        
+        # Update timers
+        to_remove = []
+        for debuff, timer in self.debuff_timers.items():
+            self.debuff_timers[debuff] = timer - 1
+            if self.debuff_timers[debuff] <= 0:
+                to_remove.append(debuff)
+        
+        for debuff in to_remove:
+            del self.debuff_timers[debuff]
+            if debuff == "stun":
+                self.stunned = False
+            elif debuff == "damage_reduction":
+                self.damage_reduction = 1.0
+            elif debuff == "burn":
+                self.burn_damage = 0
+            elif debuff == "bleed":
+                self.bleed_mult = 1.0
 
     def get_rect(self):
         return self.sprite.get_rect(center=(self.x, self.y))
@@ -670,13 +733,20 @@ class Enemy:
         surf.blit(temp_sprite, (ex - 40, ey - 45))
 
         # HP bar - Giữ nguyên logic hiển thị máu
-        bar_w = 90
-        bar_h = 10
-        bx, by = ex - bar_w // 2, ey - 65
+        bar_w = 120 if self.boss else 90
+        bar_h = 12 if self.boss else 10
+        bx, by = ex - bar_w // 2, ey - 70
         pygame.draw.rect(surf, C_HP_BG, (bx, by, bar_w, bar_h), border_radius=5)
         fill_w = int(bar_w * self.hp / self.max_hp)
         if fill_w > 0:
             pygame.draw.rect(surf, C_HP_RED, (bx, by, fill_w, bar_h), border_radius=5)
+        if self.boss:
+            try:
+                font = pygame.font.SysFont("segoeui", 16, bold=True)
+            except:
+                font = pygame.font.Font(None, 16)
+            label = font.render("BOSS", True, (255, 120, 50))
+            surf.blit(label, (ex - label.get_width() // 2, by - 24))
 
 
 # ==================== PLAYER ====================
@@ -717,14 +787,22 @@ class Player:
     def __init__(self):
         self.x = SCREEN_W // 2
         self.y = 540
-        self.hp = 100
-        self.max_hp = 100
+        self.hp = 150
+        self.max_hp = 150
         self.gold = 0
         self.level = 1
         self.xp = 0
         self.xp_next = 50
-        self.damage_mult = 1.0
-        self.combo_bonus = 0.08
+        self.damage_mult = 1.5
+        self.combo_bonus = 0.09
+        self.lifesteal_percent = 0.25  # 25% of damage dealt
+
+        # Debuffs
+        self.stunned = False
+        self.damage_reduction = 1.0  # Multiplier for damage dealt (reduced when debuffed)
+        self.burn_damage = 0  # Damage per turn from burn
+        self.bleed_mult = 1.0  # Multiplier for damage received (increased when bleed)
+        self.debuff_timers = {}  # Track debuff durations
 
         # Kích thước sprite khớp với khung xương (224x278)
         self.sprite_width = 224
@@ -786,13 +864,41 @@ class Player:
         self.sword_effects = [effect for effect in self.sword_effects if effect.life > 0]
         for effect in self.sword_effects:
             effect.update()
+        
+        # Cập nhật debuffs
+        self.update_debuffs()
+
+    def update_debuffs(self):
+        """Cập nhật các debuff và áp dụng hiệu ứng."""
+        # Burn damage
+        if self.burn_damage > 0:
+            self.hp = max(0, self.hp - self.burn_damage)
+            # Hiển thị damage từ burn
+        
+        # Update timers
+        to_remove = []
+        for debuff, timer in self.debuff_timers.items():
+            self.debuff_timers[debuff] = timer - 1
+            if self.debuff_timers[debuff] <= 0:
+                to_remove.append(debuff)
+        
+        for debuff in to_remove:
+            del self.debuff_timers[debuff]
+            if debuff == "stun":
+                self.stunned = False
+            elif debuff == "damage_reduction":
+                self.damage_reduction = 1.0
+            elif debuff == "burn":
+                self.burn_damage = 0
+            elif debuff == "bleed":
+                self.bleed_mult = 1.0
 
     def level_up(self):
         self.level += 1
         self.xp = 0
-        self.xp_next = int(self.xp_next * 1.4)
+        self.xp_next = int(self.xp_next * 1.5)
         self.max_hp += 20
-        self.hp = min(self.max_hp, self.hp + 30)
+        self.hp = min(self.max_hp, self.hp + 35)
 
     def draw(self, surf):
         # Hiệu ứng nhấp nhô nhẹ nhàng
@@ -1119,34 +1225,104 @@ def draw_menu(surf, selected_index, has_save):
     surf.blit(hint, (SCREEN_W//2 - hint.get_width()//2, start_y + len(options) * (box_h + 20) + 30))
 
 
-def draw_questions(surf):
+def draw_questions(surf, game):
     # Background
     surf.fill(C_BG)
     
     # Title
-    title = font_lg.render("CÂU HỎI & HƯỚNG DẪN", True, C_GOLD)
+    title = font_lg.render("CÂU HỎI TRẮC NGHIỆM", True, C_GOLD)
     surf.blit(title, (SCREEN_W//2 - title.get_width()//2, 50))
     
-    # Questions text
-    questions = [
-        "SPACE: Tung lại xúc xắc",
-        "ENTER: Tấn công kẻ thù", 
-        "Click: Khóa/mở xúc xắc",
-        "R: Chơi lại khi thua",
-        "",
-        "Mục tiêu: Tiêu diệt kẻ thù bằng xúc xắc!",
-        "Tạo combo để tăng sát thương."
-    ]
-    
-    start_y = 120
-    for i, q in enumerate(questions):
-        color = C_WHITE if q else C_LAVENDER
-        txt = font_md.render(q, True, color)
-        surf.blit(txt, (SCREEN_W//2 - txt.get_width()//2, start_y + i * 35))
+    if game.all_questions:
+        # Hiển thị tất cả câu hỏi từ file
+        start_y = 120
+        displayed = 0
+        for q_data in game.all_questions:
+            if displayed >= 10:  # Giới hạn hiển thị
+                break
+            text = f"{q_data['id']}. {q_data['text']}"
+            txt = font_sm.render(text, True, C_WHITE)
+            surf.blit(txt, (30, start_y + displayed * 30))
+            displayed += 1
+    else:
+        # Fallback: hiển thị hướng dẫn
+        guide = [
+            "SPACE: Tung lại xúc xắc",
+            "ENTER: Tấn công kẻ thù", 
+            "Click: Khóa/mở xúc xắc",
+            "R: Chơi lại khi thua"
+        ]
+        start_y = 150
+        for i, text in enumerate(guide):
+            txt = font_md.render(text, True, C_WHITE)
+            surf.blit(txt, (SCREEN_W//2 - txt.get_width()//2, start_y + i * 40))
     
     # Back hint
     hint = font_sm.render("Nhấn ESC để quay lại menu", True, C_LAVENDER)
     surf.blit(hint, (SCREEN_W//2 - hint.get_width()//2, SCREEN_H - 60))
+
+
+def draw_boss_question(surf, game, selected_option):
+    """Vẽ câu hỏi khi fight boss."""
+    if not game.boss_question:
+        return
+    
+    question = game.boss_question
+    # Nếu chưa có lựa chọn, mặc định là 0
+    if selected_option < 0:
+        selected_option = 0
+    
+    # Semi-transparent background
+    s = pygame.Surface((SCREEN_W, 350), pygame.SRCALPHA)
+    pygame.draw.rect(s, (20, 10, 40, 200), s.get_rect(), border_radius=10)
+    surf.blit(s, (0, SCREEN_H - 350))
+    
+    # Title
+    title = font_md.render("⚡ CÂU HỎI ⚡", True, C_GOLD)
+    surf.blit(title, (SCREEN_W//2 - title.get_width()//2, SCREEN_H - 330))
+    
+    # Debuff hint
+    if game.current_debuff_name:
+        hint_title = font_sm.render(f"Debuff: {game.current_debuff_name}", True, C_ORANGE)
+        surf.blit(hint_title, (SCREEN_W//2 - hint_title.get_width()//2, SCREEN_H - 300))
+        start_y = SCREEN_H - 270
+    else:
+        start_y = SCREEN_H - 300
+
+    # Question text (word wrap)
+    question_text = question["text"]
+    words = question_text.split()
+    lines = []
+    current_line = ""
+    for word in words:
+        test_line = current_line + word + " "
+        txt = font_md.render(test_line, True, C_WHITE)
+        if txt.get_width() > SCREEN_W - 60:
+            if current_line:
+                lines.append(current_line)
+            current_line = word + " "
+        else:
+            current_line = test_line
+    if current_line:
+        lines.append(current_line)
+    
+    start_y = SCREEN_H - 300
+    for line in lines:
+        txt = font_md.render(line, True, C_WHITE)
+        surf.blit(txt, (SCREEN_W//2 - txt.get_width()//2, start_y))
+        start_y += 35
+    
+    # Options
+    start_y = SCREEN_H - 150
+    for i, option in enumerate(question["options"]):
+        color = C_GOLD if i == selected_option else C_WHITE
+        marker = "→ " if i == selected_option else "  "
+        txt = font_sm.render(f"{marker}{chr(65+i)}: {option}", True, color)
+        surf.blit(txt, (40, start_y + i * 30))
+    
+    # Hint
+    hint = font_xs.render("Mũi tên ↑↓ chọn, ENTER xác nhận", True, C_LAVENDER)
+    surf.blit(hint, (SCREEN_W//2 - hint.get_width()//2, SCREEN_H - 20))
 
 
 # ==================== MAIN GAME ====================
@@ -1175,7 +1351,35 @@ class Game:
         self.dice = []
         self.show_questions = False
         self.shake_timer = 0
+        self.map_themes = ["lava", "icemap", "naturemap"]
+        self.current_map_index = 0
+        self.kills_until_boss = 0
+        self.boss_active = False
+        
+        # --- QUESTIONS SYSTEM ---
+        self.all_questions = load_questions()
+        self.boss_question = None
+        self.boss_question_answered = False
+        self.answer_selected = -1
+        self.boss_question_milestones = [0.8, 0.6, 0.4, 0.2, 0.01]  # HP percentages for questions
+        self.boss_questions_asked = []  # Track which milestones have been asked
+        self.boss_wrong_answers = 0
+        self.current_debuff_type = None
+        self.current_debuff_name = None
+        
         # Other attributes will be set in reset()
+
+        # --- MAP SYSTEM ---
+        self.map_manager = MapManager(SCREEN_W, SCREEN_H)
+        self.map_manager.generate_map(
+            cols=30, rows=20,
+            theme=self.map_themes[self.current_map_index],
+            seed=0,  # Fixed seed cho menu
+            static_background=True,
+            background_image_path=self.get_map_image_path(self.map_themes[self.current_map_index]),
+            tile_w=16,
+            scale=1.0
+        )
 
     def reset(self):
         self.player    = Player()
@@ -1183,6 +1387,9 @@ class Game:
         self.dice      = [Die(i) for i in range(5)]
         self.rerolls   = 3
         self.max_rerolls = 3
+        self.current_map_index = 0
+        self.kills_until_boss = 0
+        self.boss_active = False
         self.particles : list[Particle]    = []
         self.float_texts: list[FloatingText] = []
         self.state     = GameState.ROLLING
@@ -1193,7 +1400,6 @@ class Game:
         self.combo_count = 0
         self.combo_value = None
         self.combo_effect = None
-        self.enemy_stunned = False
         self.level_up_options = []
         self.selected_upgrade = 0
         self.enemy_atk_timer = 0
@@ -1203,10 +1409,33 @@ class Game:
         self.pending_attack = None
         self.menu_selected = 0
         self.has_save = False  # TODO: implement save/load later
+        self.boss_active = False
+        
+        # --- RESET QUESTIONS ---
+        self.boss_question = None
+        self.boss_question_answered = False
+        self.answer_selected = -1
+        self.boss_questions_asked = []
+        self.boss_wrong_answers = 0
+        self.current_debuff_type = None
+        self.current_debuff_name = None
+
+        # --- MAP SYSTEM ---
+        self.map_manager = MapManager(SCREEN_W, SCREEN_H)
+        self.map_manager.generate_map(
+            cols=30, rows=20,
+            theme=self.map_themes[self.current_map_index],
+            seed=self.level_count,  # Different map each wave
+            static_background=True,
+            background_image_path=self.get_map_image_path(self.map_themes[self.current_map_index]),
+            tile_w=16,
+            scale=1.0
+        )
 
         # Unlock first 2 dice
         self.dice[0].roll(stagger_frames=0)
         self.dice[1].roll(stagger_frames=8)
+        self.dice[2].roll(stagger_frames=16)
         self._eval()
 
     def _eval(self):
@@ -1282,7 +1511,8 @@ class Game:
         extra_text = None
         heal_amount = 0
         if self.combo_effect == "STUN":
-            self.enemy_stunned = True
+            self.enemy.stunned = True
+            self.enemy.debuff_timers["stun"] = 120  # 2 giây
             extra_text = "STUNNED"
         elif self.combo_effect == "HEAL":
             heal_amount = 15
@@ -1313,8 +1543,35 @@ class Game:
         pygame.time.set_timer(pygame.USEREVENT + 3, 500, loops=1)
 
     def on_enemy_dead(self):
+        boss_defeated = hasattr(self.enemy, 'boss') and self.enemy.boss
+        if boss_defeated:
+            self.current_map_index = (self.current_map_index + 1) % len(self.map_themes)
+            self.kills_until_boss = 0
+            self.boss_active = False
+            self.level_count = 1
+            self.player.hp = min(self.player.max_hp, self.player.hp + 30)
+            self.map_manager.generate_map(
+                cols=30, rows=20,
+                theme=self.map_themes[self.current_map_index],
+                seed=self.level_count,
+                static_background=True,
+                background_image_path=self.get_map_image_path(self.map_themes[self.current_map_index]),
+                tile_w=16,
+                scale=1.0
+            )
+            self.add_float(SCREEN_W // 2, 80, f"Entering {self.map_themes[self.current_map_index].upper()}", C_CYAN, 24)
+            self._spawn_new_enemy()
+            return
+
         self.level_count += 1
+        self.kills_until_boss += 1
         self.player.hp = min(self.player.max_hp, self.player.hp + 15)
+        if self.kills_until_boss >= 4:
+            self.kills_until_boss = 0
+            self.boss_active = True
+            self._spawn_boss()
+            return
+
         # Check player level up
         if self.player.xp >= self.player.xp_next:
             self.player.level_up()
@@ -1343,12 +1600,26 @@ class Game:
         self.pending_attack["resolved"] = True
         dmg = self.pending_attack["damage"]
         crit_bonus = self.pending_attack.get("crit_bonus", 0)
+        
+        # Áp dụng damage reduction của enemy
+        total_damage = (dmg + crit_bonus) * self.enemy.damage_reduction
+        dmg = int(total_damage - crit_bonus)  # Tách lại để hiển thị
+        crit_bonus = int(crit_bonus * self.enemy.damage_reduction)
+        
         if crit_bonus > 0:
-            self.enemy.take_damage(crit_bonus)
+            self.enemy.take_damage(crit_bonus, self)
             self.spawn_particles(self.enemy.x, self.enemy.y, (255, 100, 100), 8)
-        self.enemy.take_damage(dmg)
+        self.enemy.take_damage(dmg, self)
         self.spawn_particles(self.enemy.x, self.enemy.y, C_RED, 12)
         self.add_float(self.enemy.x, self.enemy.y - 40, f"-{dmg}", C_RED, 26)
+        
+        # Lifesteal: hồi máu dựa trên sát thương
+        heal_from_damage = int(total_damage * self.player.lifesteal_percent)
+        if heal_from_damage > 0:
+            self.player.hp = min(self.player.max_hp, self.player.hp + heal_from_damage)
+            self.add_float(self.player.x, self.player.y - 30, f"+{heal_from_damage}💧", (100, 200, 255), 18)
+            self.spawn_particles(self.player.x, self.player.y, (100, 150, 255), 6)
+        
         g = self.pending_attack["gold"]
         self.player.gold += g
         self.add_float(self.enemy.x + 30, self.enemy.y - 10, f"+{g}💰", C_GOLD, 16)
@@ -1415,17 +1686,147 @@ class Game:
         self.enemy = Enemy(level=self.level_count)
         self.state = GameState.ROLLING
 
+    def _spawn_boss(self):
+        self.enemy = Enemy(level=self.level_count, boss=True)
+        self.state = GameState.ROLLING
+        self.add_float(self.enemy.x, self.enemy.y - 80, "BOSS APPROACHING!", C_RED, 28)
+        self.spawn_particles(self.enemy.x, self.enemy.y, (200, 60, 255), 20)
+        self.boss_questions_asked = []
+        self.boss_question = None
+        self.boss_question_answered = False
+        self.answer_selected = -1
+        self.current_debuff_type = None
+        self.current_debuff_name = None
+        self.current_milestone = None
+        self.boss_wrong_answers = 0
+
+    def trigger_boss_question(self, milestone):
+        """Đặt câu hỏi boss tại mốc máu nhất định."""
+        if not self.all_questions:
+            return
+        
+        # Chọn câu hỏi ngẫu nhiên
+        question = random.choice(self.all_questions)
+        self.boss_question = question
+        self.boss_question_answered = False
+        self.answer_selected = -1
+        
+        # Chọn debuff ngẫu nhiên cho câu hỏi này
+        debuff_map = {
+            "stun": "Choáng",
+            "damage_reduction": "Giảm Sát Thương",
+            "burn": "Thiêu Đốt",
+            "bleed": "Trọng Thương"
+        }
+        self.current_debuff_type = random.choice(list(debuff_map.keys()))
+        self.current_debuff_name = debuff_map[self.current_debuff_type]
+        self.current_milestone = milestone
+        
+        # Pause game state để chờ câu trả lời
+        self.state = GameState.ROLLING  # Keep rolling but show question
+
+    def submit_boss_answer(self):
+        """Xử lý submit đáp án cho câu hỏi boss."""
+        if not self.boss_question or self.answer_selected < 0:
+            return
+        
+        self.boss_question_answered = True
+        correct = self.answer_selected == self.boss_question["correct"]
+        
+        debuff_type = self.current_debuff_type or "stun"
+        debuff_name = self.current_debuff_name or "Choáng"
+        
+        if correct:
+            # Đúng: debuff boss
+            self.apply_debuff(self.enemy, debuff_type, 180)  # 3 giây tại 60 FPS
+            msg = f"✓ Boss bị {debuff_name}!"
+            color = C_GREEN
+        else:
+            self.boss_wrong_answers += 1
+            if self.boss_wrong_answers >= 3:
+                self.handle_boss_question_failure()
+                return
+
+            # Sai: debuff player
+            self.apply_debuff(self.player, debuff_type, 180)
+            msg = f"✗ Bạn bị {debuff_name}!"
+            color = C_RED
+        
+        # Hiển thị kết quả
+        self.add_float(SCREEN_W//2, SCREEN_H//2 - 50, msg, color, 24)
+        self.spawn_particles(SCREEN_W//2, SCREEN_H//2, color, 15)
+        
+        # Reset question
+        self.boss_question = None
+        self.current_milestone = None
+        self.current_debuff_type = None
+        self.current_debuff_name = None
+
+    def apply_debuff(self, target, debuff_type, duration):
+        """Áp dụng debuff cho target (player hoặc enemy)."""
+        target.debuff_timers[debuff_type] = duration
+        
+        if debuff_type == "stun":
+            target.stunned = True
+        elif debuff_type == "damage_reduction":
+            target.damage_reduction = 0.5  # Giảm 50% damage
+        elif debuff_type == "burn":
+            target.burn_damage = 5  # 5 damage per turn
+        elif debuff_type == "bleed":
+            target.bleed_mult = 1.5  # Nhận 50% damage hơn
+
+    def handle_boss_question_failure(self):
+        """Xử lý khi trả lời sai quá 2 câu boss."""
+        self.boss_active = False
+        self.level_count = 1
+        self.kills_until_boss = 0
+        self.boss_questions_asked = []
+        self.boss_question = None
+        self.boss_question_answered = False
+        self.answer_selected = -1
+        self.current_debuff_type = None
+        self.current_debuff_name = None
+        self.current_milestone = None
+        self.boss_wrong_answers = 0
+
+        self.player.hp = max(1, self.player.hp)
+
+        self.map_manager.generate_map(
+            cols=30, rows=20,
+            theme=self.map_themes[self.current_map_index],
+            seed=self.level_count,
+            static_background=True,
+            background_image_path=self.get_map_image_path(self.map_themes[self.current_map_index]),
+            tile_w=16,
+            scale=1.0
+        )
+        self.enemy = Enemy(level=1)
+        self.state = GameState.ROLLING
+
+        self.add_float(SCREEN_W//2, SCREEN_H//2 - 40, "Boss đã kết liễu! Quay về Wave 1", C_RED, 20)
+        self.spawn_particles(self.player.x, self.player.y, C_RED, 20)
+
+    def get_map_image_path(self, theme: str) -> str:
+        mapping = {
+            "lava": "assets/Firemap.png",
+            "icemap": "assets/Icemap.png",
+            "naturemap": "assets/Naturemap.png",
+        }
+        return mapping.get(theme, "assets/Firemap.png")
+
     def on_enemy_attack(self):
         if self.enemy.dead:
             return
-        if self.enemy_stunned:
-            self.enemy_stunned = False
+        if self.enemy.stunned:
+            self.enemy.stunned = False
             self.add_float(self.enemy.x, self.enemy.y - 40, "STUN BLOCKED", C_CYAN, 22)
             self.spawn_particles(self.enemy.x, self.enemy.y, (120, 220, 255), 12)
             return
         atk = self.enemy.atk + random.randint(0, 5)
-        self.player.hp = max(0, self.player.hp - atk)
-        self.add_float(self.player.x, self.player.y - 30, f"-{atk}", (255, 100, 200), 20)
+        # Áp dụng bleed multiplier của player
+        actual_damage = int(atk * self.player.bleed_mult)
+        self.player.hp = max(0, self.player.hp - actual_damage)
+        self.add_float(self.player.x, self.player.y - 30, f"-{actual_damage}", (255, 100, 200), 20)
         self.spawn_particles(self.player.x, self.player.y, (200, 50, 150), 6)
         if self.player.hp <= 0:
             self.state = GameState.GAME_OVER
@@ -1437,6 +1838,7 @@ class Game:
             d.phase = Die.PHASE_IDLE
         self.dice[0].roll(stagger_frames=0)
         self.dice[1].roll(stagger_frames=6)
+        self.dice[2].roll(stagger_frames=12)
         self.rerolls = self.max_rerolls
         self._eval()
         if self.state == GameState.ATTACKING:
@@ -1451,6 +1853,12 @@ class Game:
     def update(self):
         self.frame += 1
         self.path_offset += 1
+        
+        # Cập nhật map (camera follow)
+        if self.player:
+            self.map_manager.update(self.player.x, self.player.y)
+            if self.map_manager.editor:
+                self.map_manager.editor.update(pygame.mouse.get_pos())
         
         if self.state == GameState.MENU:
             return  # Don't update game objects in menu
@@ -1499,12 +1907,16 @@ class Game:
                     ))
                 # re-eval hand once every die has landed
                 self._eval()
-
+        
+        
         if self.state == GameState.LEVEL_UP:
             # Chờ người chơi chọn thuộc tính nâng cấp
             pass
 
     def handle_event(self, event):
+        # Handle map manager events first (F1=editor, F3=minimap, F2=save)
+        self.map_manager.handle_event(event)
+
         if event.type == pygame.USEREVENT + 1:
             self.on_enemy_dead()
         elif event.type == pygame.USEREVENT + 2:
@@ -1536,7 +1948,15 @@ class Game:
                 if event.key == pygame.K_r:
                     self.reset()
             elif self.state == GameState.ROLLING:
-                if event.key == pygame.K_SPACE:
+                # Xử lý câu hỏi boss nếu đang hiển thị
+                if self.boss_active and self.boss_question and not self.boss_question_answered:
+                    if event.key == pygame.K_UP:
+                        self.answer_selected = max(0, self.answer_selected - 1)
+                    elif event.key == pygame.K_DOWN:
+                        self.answer_selected = min(len(self.boss_question["options"]) - 1, self.answer_selected + 1)
+                    elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                        self.submit_boss_answer()
+                elif event.key == pygame.K_SPACE:
                     self.handle_reroll()
                 elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
                     self.handle_attack()
@@ -1583,12 +2003,22 @@ class Game:
 
         if self.state == GameState.MENU:
             if self.show_questions:
-                draw_questions(draw_surf)
+                draw_questions(draw_surf, self)
             else:
+                # Vẽ tilemap TRƯỚC enemy/player
+                self.map_manager.draw(
+                    draw_surf,
+                    player_world_pos=(self.player.x, self.player.y) if self.player else None
+                )
+                # Giữ lại draw_background() nếu muốn kết hợp (castle, bats, cây...)
                 draw_menu(draw_surf, self.menu_selected, self.has_save)
         else:
             # Draw game elements
             draw_background(draw_surf, self.frame, self.path_offset)
+            self.map_manager.draw(
+                draw_surf,
+                player_world_pos=(self.player.x, self.player.y) if self.player else None
+            )
             self.enemy.draw(draw_surf)
             self.player.draw(draw_surf)
 
@@ -1600,10 +2030,16 @@ class Game:
             draw_hud(draw_surf, self.player, self.level_count)
 
             # Wave indicator
-            wave_txt = font_sm.render(f"Wave {self.level_count}", True, C_LAVENDER)
+            map_name = self.map_themes[self.current_map_index].upper()
+            wave_label = f"BOSS FIGHT" if getattr(self.enemy, 'boss', False) else f"Wave {self.level_count}"
+            wave_txt = font_sm.render(f"{map_name} — {wave_label}", True, C_LAVENDER)
             draw_surf.blit(wave_txt, (SCREEN_W//2 - wave_txt.get_width()//2, 55))
 
             draw_dice_panel(draw_surf, self.dice, self.hand_name, self.damage, self.rerolls, self.max_rerolls, self.combo_count, self.combo_effect)
+
+            # Hiển thị câu hỏi khi fight boss
+            if self.boss_active and self.boss_question and not self.boss_question_answered:
+                draw_boss_question(draw_surf, self, self.answer_selected)
 
             if self.state == GameState.LEVEL_UP:
                 draw_level_up_menu(draw_surf, self.player.level, self.level_up_options, self.selected_upgrade)
