@@ -1,0 +1,39 @@
+Python được phát triển bởi ai?
+Guido van Rossum
+Dennis Ritchie
+Bjarne Stroustrup
+James Gosling
+Correct: 1
+Reward: Sát thương +50%
+
+Năm nào Python được ra mắt?
+1989
+1991
+1995
+2000
+Correct: 2
+Reward: Hồi máu 50HP
+
+Pygame dùng để làm gì?
+Web framework
+Game engine
+Data analysis
+Machine learning
+Correct: 2
+Reward: Sát thương +30%
+
+FPS viết tắt của gì?
+First Person Shooter
+Frames Per Second
+File Processing System
+Fast Processing Speed
+Correct: 2
+Reward: Khoá reroll miễn phí
+
+Xúc xắc poker là gì?
+Một trò chơi bài
+Một loại xúc xắc có 6 mặt
+Kết hợp poker và xúc xắc
+Một loại tiền tệ
+Correct: 3
+Reward: Tăng reroll +1

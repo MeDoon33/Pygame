@@ -9,6 +9,7 @@ import math
 import sys
 import json
 from enum import Enum
+from tkinter import filedialog, Tk
 
 # --- TILEMAP SYSTEM ---
 from tilemap import MapManager
@@ -110,6 +111,28 @@ def load_spritesheet(path, frame_count, width, height):
     return frames
 
 
+def load_spritesheet_vertical(path, frame_count, width, height):
+    """Cắt một dải ảnh dọc thành danh sách các frames (frame xếp từ trên xuống dưới)."""
+    frames = []
+    try:
+        sheet = pygame.image.load(path).convert_alpha()
+        sheet_height = sheet.get_height()
+        frame_height = sheet_height // frame_count  # Tính height thực tế cho mỗi frame
+        for i in range(frame_count):
+            # Cắt từng khung hình dựa trên height tính toán (từ trên xuống dưới)
+            frame = sheet.subsurface(pygame.Rect(0, i * frame_height, width, frame_height))
+            frames.append(pygame.transform.scale(frame, (width, height)))
+    except Exception as e:
+        print(f"Lỗi load spritesheet dọc {path}: {e}")
+        # Nếu lỗi, tạo khung hình mặc định trong suốt để tránh crash game
+        for _ in range(frame_count):
+            s = pygame.Surface((width, height), pygame.SRCALPHA)
+            pygame.draw.line(s, (255, 0, 255), (4, 4), (width - 5, height - 5), 3)
+            pygame.draw.line(s, (255, 0, 255), (width - 5, 4), (4, height - 5), 3)
+            frames.append(s)
+    return frames
+
+
 def load_questions():
     """Load câu hỏi từ file JSON."""
     try:
@@ -118,6 +141,125 @@ def load_questions():
             return data.get("questions", [])
     except Exception as e:
         print(f"Lỗi load questions: {e}")
+        return []
+
+
+def save_questions(questions):
+    """Lưu câu hỏi vào file JSON."""
+    try:
+        with open("questions.json", "w", encoding="utf-8") as f:
+            json.dump({"questions": questions}, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        print(f"Lỗi save questions: {e}")
+        return False
+
+
+def open_file_chooser():
+    """Mở file dialog để chọn file từ máy."""
+    try:
+        root = Tk()
+        root.withdraw()  # Ẩn window chính của tkinter
+        file_path = filedialog.askopenfilename(
+            title="Chọn file câu hỏi (.txt)",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+            initialdir="."
+        )
+        root.destroy()
+        return file_path
+    except Exception as e:
+        print(f"Lỗi mở file dialog: {e}")
+        return None
+
+
+def import_questions_from_file(file_path):
+    """
+    Import câu hỏi từ file văn bản.
+    Format:
+    Câu hỏi?
+    Option 1
+    Option 2
+    Option 3
+    Option 4
+    Correct: 1
+    Reward: Tên reward
+    
+    [blank line]
+    
+    Câu hỏi tiếp theo?
+    ...
+    """
+    questions = []
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        
+        # Split by double newlines to get question blocks
+        blocks = content.strip().split("\n\n")
+        next_id = 1
+        
+        for block in blocks:
+            if not block.strip():
+                continue
+            
+            lines = block.strip().split("\n")
+            if len(lines) < 7:  # Need at least: question, 4 options, correct, reward
+                continue
+            
+            question_text = lines[0].strip()
+            if not question_text:
+                continue
+            
+            # Extract options
+            options = []
+            line_idx = 1
+            for i in range(4):
+                if line_idx < len(lines):
+                    options.append(lines[line_idx].strip())
+                    line_idx += 1
+            
+            if len(options) < 4:
+                continue
+            
+            # Extract correct answer
+            correct_idx = 0
+            while line_idx < len(lines):
+                line = lines[line_idx].strip()
+                if line.lower().startswith("correct:"):
+                    try:
+                        correct_idx = int(line.split(":")[-1].strip()) - 1  # Convert to 0-indexed
+                        if correct_idx < 0 or correct_idx >= 4:
+                            correct_idx = 0
+                    except:
+                        correct_idx = 0
+                    break
+                line_idx += 1
+            
+            # Extract reward
+            reward = "Sát thương +10%"
+            line_idx += 1
+            while line_idx < len(lines):
+                line = lines[line_idx].strip()
+                if line.lower().startswith("reward:"):
+                    reward = line.split(":", 1)[-1].strip()
+                    if not reward:
+                        reward = "Sát thương +10%"
+                    break
+                line_idx += 1
+            
+            question = {
+                "id": next_id,
+                "text": question_text,
+                "options": options,
+                "correct": correct_idx,
+                "reward": reward
+            }
+            questions.append(question)
+            next_id += 1
+        
+        return questions
+    except Exception as e:
+        print(f"Lỗi import questions: {e}")
         return []
 
 
@@ -630,7 +772,7 @@ class Enemy:
         self.hp = self.max_hp
         self.x = SCREEN_W // 2
         self.y = 200
-        self.frame = 0
+        self.frame = 0  # For bob/idle animation
         self.hit_timer = 0
         self.level = level
         self.atk = 6 + level * 6 if boss else 4+ level * 3
@@ -641,14 +783,33 @@ class Enemy:
         self.stunned = False
         self.damage_reduction = 1.0
         self.burn_damage = 0
+        self.burn_tick = 0
         self.bleed_mult = 1.0
         self.debuff_timers = {}
         
-        # --- NẠP SPRITE ---
-        # Kích thước khung xương cũ là 80x90
-        self.sprite = load_sprite("assets/enemy.png", 80, 90)
+        # --- NẠP ANIMATION FRAMES ---
+        self.sprite_width = 146
+        self.sprite_height = 150
+        self.frame_timer = 0
+        self.current_frame = 0
+        self.frame_delays = {
+            "IDLE": 15,
+            "ATTACK": 12  # Chậm hơn một chút cho attack
+        }
+
+        # Load enemy animations (6 frames mỗi animation)
+        self.animations = {
+            "IDLE": load_spritesheet("assets/enemy_idle.png", 6, self.sprite_width, self.sprite_height),
+            "ATTACK": load_spritesheet("assets/enemy_attack.png", 6, self.sprite_width, self.sprite_height)  # Giả sử frames gốc đã đứng thẳng hướng xuống
+        }
+        self.current_animation = "IDLE"
+
         if boss:
-            self.sprite = pygame.transform.scale(self.sprite, (120, 130))
+            # Boss version - lớn hơn
+            self.sprite_width = 120
+            self.sprite_height = 130
+            self.animations["IDLE"] = [pygame.transform.scale(frame, (120, 130)) for frame in self.animations["IDLE"]]
+            self.animations["ATTACK"] = [pygame.transform.scale(frame, (120, 130)) for frame in self.animations["ATTACK"]]
 
     def take_damage(self, dmg, game=None):
         old_hp_percent = self.hp / self.max_hp
@@ -669,6 +830,19 @@ class Enemy:
 
     def update(self):
         self.frame += 1
+        
+        # Cập nhật animation frame
+        self.frame_timer += 1
+        current_delay = self.frame_delays.get(self.current_animation, 10)
+        if self.frame_timer >= current_delay:
+            self.frame_timer = 0
+            self.current_frame += 1
+            anim_frames = len(self.animations.get(self.current_animation, []))
+            if anim_frames > 0 and self.current_frame >= anim_frames:
+                if self.current_animation == "ATTACK":
+                    self.current_animation = "IDLE"
+                self.current_frame = 0
+        
         if self.hit_timer > 0:
             self.hit_timer -= 1
         if self.dead and self.death_timer > 0:
@@ -679,10 +853,13 @@ class Enemy:
 
     def update_debuffs(self):
         """Cập nhật các debuff và áp dụng hiệu ứng."""
-        # Burn damage
+        # Burn damage (apply once per second)
         if self.burn_damage > 0:
-            self.hp = max(0, self.hp - self.burn_damage)
-            # Hiển thị damage từ burn
+            self.burn_tick += 1
+            if self.burn_tick >= FPS:
+                self.burn_tick = 0
+                self.hp = max(0, self.hp - self.burn_damage)
+                # Hiển thị damage từ burn
         
         # Update timers
         to_remove = []
@@ -699,11 +876,16 @@ class Enemy:
                 self.damage_reduction = 1.0
             elif debuff == "burn":
                 self.burn_damage = 0
+                self.burn_tick = 0
             elif debuff == "bleed":
                 self.bleed_mult = 1.0
 
     def get_rect(self):
-        return self.sprite.get_rect(center=(self.x, self.y))
+        idle_frames = self.animations.get("IDLE", [])
+        if idle_frames:
+            return idle_frames[self.current_frame].get_rect(center=(self.x, self.y))
+        return pygame.Rect(self.x - self.sprite_width//2, self.y - self.sprite_height//2, 
+                          self.sprite_width, self.sprite_height)
 
     def draw(self, surf):
         bob = math.sin(self.frame * 0.05) * 4
@@ -722,15 +904,24 @@ class Enemy:
         pygame.draw.ellipse(sh, (0, 0, 0, 80), (0, 0, 50, 14))
         surf.blit(sh, (ex - 25, ey + 28))
 
-        # Xử lý Sprite với hiệu ứng Alpha và Blink
-        temp_sprite = self.sprite.copy()
+        # Lấy animation frame hiện tại
+        anim_frames = self.animations.get(self.current_animation, []) or self.animations.get("IDLE", [])
+        if anim_frames:
+            current_sprite = anim_frames[self.current_frame].copy()
+        else:
+            # Fallback nếu không có animation
+            current_sprite = pygame.Surface((self.sprite_width, self.sprite_height), pygame.SRCALPHA)
         
         # Hiệu ứng nháy trắng/đỏ khi bị thương
         if blink:
-            temp_sprite.fill((255, 100, 100, 150), special_flags=pygame.BLEND_RGBA_ADD)
+            current_sprite.fill((255, 100, 100, 150), special_flags=pygame.BLEND_RGBA_ADD)
             
-        temp_sprite.set_alpha(alpha)
-        surf.blit(temp_sprite, (ex - 40, ey - 45))
+        current_sprite.set_alpha(alpha)
+        
+        # Vẽ sprite (căn giữa)
+        sprite_offset_x = self.sprite_width // 2
+        sprite_offset_y = self.sprite_height // 2
+        surf.blit(current_sprite, (ex - sprite_offset_x, ey - sprite_offset_y))
 
         # HP bar - Giữ nguyên logic hiển thị máu
         bar_w = 120 if self.boss else 90
@@ -801,6 +992,7 @@ class Player:
         self.stunned = False
         self.damage_reduction = 1.0  # Multiplier for damage dealt (reduced when debuffed)
         self.burn_damage = 0  # Damage per turn from burn
+        self.burn_tick = 0
         self.bleed_mult = 1.0  # Multiplier for damage received (increased when bleed)
         self.debuff_timers = {}  # Track debuff durations
 
@@ -870,10 +1062,13 @@ class Player:
 
     def update_debuffs(self):
         """Cập nhật các debuff và áp dụng hiệu ứng."""
-        # Burn damage
+        # Burn damage (apply once per second)
         if self.burn_damage > 0:
-            self.hp = max(0, self.hp - self.burn_damage)
-            # Hiển thị damage từ burn
+            self.burn_tick += 1
+            if self.burn_tick >= FPS:
+                self.burn_tick = 0
+                self.hp = max(0, self.hp - self.burn_damage)
+                # Hiển thị damage từ burn
         
         # Update timers
         to_remove = []
@@ -890,6 +1085,7 @@ class Player:
                 self.damage_reduction = 1.0
             elif debuff == "burn":
                 self.burn_damage = 0
+                self.burn_tick = 0
             elif debuff == "bleed":
                 self.bleed_mult = 1.0
 
@@ -1196,7 +1392,7 @@ def draw_game_over(surf):
     draw_text_center(surf, "Nhấn R để chơi lại", font_md, C_WHITE, SCREEN_W//2, SCREEN_H//2 + 20)
 
 
-def draw_menu(surf, selected_index, has_save):
+def draw_menu(surf, selected_index, has_save, game=None):
     # Background
     surf.fill(C_BG)
     
@@ -1205,7 +1401,7 @@ def draw_menu(surf, selected_index, has_save):
     surf.blit(title, (SCREEN_W//2 - title.get_width()//2, 100))
     
     # Menu options
-    options = ["Chơi mới", "Chơi tiếp" if has_save else "Chơi tiếp (không có save)", "Câu hỏi", "Thoát"]
+    options = ["Chơi mới", "Chơi tiếp" if has_save else "Chơi tiếp (không có save)", "Tạo câu hỏi từ file", "Thoát"]
     start_y = 250
     box_w = 300
     box_h = 50
@@ -1220,9 +1416,11 @@ def draw_menu(surf, selected_index, has_save):
         txt = font_md.render(option, True, C_WHITE)
         surf.blit(txt, (rect.x + (box_w - txt.get_width())//2, rect.y + (box_h - txt.get_height())//2))
     
-    # Hint
-    hint = font_sm.render("Dùng ↑/↓ chọn và Enter xác nhận", True, C_LAVENDER)
-    surf.blit(hint, (SCREEN_W//2 - hint.get_width()//2, start_y + len(options) * (box_h + 20) + 30))
+    # Import status message
+    if game and game.import_status:
+        status_color = C_GREEN if "Thành công" in game.import_status else C_RED
+        status_text = font_sm.render(game.import_status, True, status_color)
+        surf.blit(status_text, (SCREEN_W//2 - status_text.get_width()//2, start_y + len(options) * (box_h + 20) - 40))
 
 
 def draw_questions(surf, game):
@@ -1230,36 +1428,54 @@ def draw_questions(surf, game):
     surf.fill(C_BG)
     
     # Title
-    title = font_lg.render("CÂU HỎI TRẮC NGHIỆM", True, C_GOLD)
+    title = font_lg.render("HƯỚNG DẪN", True, C_GOLD)
     surf.blit(title, (SCREEN_W//2 - title.get_width()//2, 50))
     
     if game.all_questions:
-        # Hiển thị tất cả câu hỏi từ file
-        start_y = 120
+        # Hiển thị danh sách câu hỏi
+        subtitle = font_md.render("CÂU HỎI TRONG GAME", True, C_LAVENDER)
+        surf.blit(subtitle, (SCREEN_W//2 - subtitle.get_width()//2, 100))
+        
+        start_y = 150
         displayed = 0
         for q_data in game.all_questions:
-            if displayed >= 10:  # Giới hạn hiển thị
+            if displayed >= 8:  # Giới hạn hiển thị
+                if len(game.all_questions) > 8:
+                    more = font_xs.render(f"...và {len(game.all_questions) - 8} câu khác", True, C_GRAY)
+                    surf.blit(more, (SCREEN_W//2 - more.get_width()//2, start_y + displayed * 30))
                 break
             text = f"{q_data['id']}. {q_data['text']}"
             txt = font_sm.render(text, True, C_WHITE)
             surf.blit(txt, (30, start_y + displayed * 30))
             displayed += 1
     else:
-        # Fallback: hiển thị hướng dẫn
+        # Hiển thị hướng dẫn chơi game
+        guide_title = font_md.render("HƯỚNG DẪN CHƠI GAME", True, C_LAVENDER)
+        surf.blit(guide_title, (SCREEN_W//2 - guide_title.get_width()//2, 100))
+        
         guide = [
             "SPACE: Tung lại xúc xắc",
             "ENTER: Tấn công kẻ thù", 
             "Click: Khóa/mở xúc xắc",
-            "R: Chơi lại khi thua"
+            "R: Chơi lại khi thua",
+            "",
+            "Sử dụng: Tạo câu hỏi từ file",
+            "để thêm câu hỏi custom vào game"
         ]
         start_y = 150
         for i, text in enumerate(guide):
-            txt = font_md.render(text, True, C_WHITE)
+            if text:
+                color = C_CYAN if i > 3 else C_WHITE
+                txt = font_md.render(text, True, color)
+            else:
+                continue
             surf.blit(txt, (SCREEN_W//2 - txt.get_width()//2, start_y + i * 40))
     
     # Back hint
     hint = font_sm.render("Nhấn ESC để quay lại menu", True, C_LAVENDER)
     surf.blit(hint, (SCREEN_W//2 - hint.get_width()//2, SCREEN_H - 60))
+
+
 
 
 def draw_boss_question(surf, game, selected_option):
@@ -1283,9 +1499,18 @@ def draw_boss_question(surf, game, selected_option):
     
     # Debuff hint
     if game.current_debuff_name:
-        hint_title = font_sm.render(f"Debuff: {game.current_debuff_name}", True, C_ORANGE)
-        surf.blit(hint_title, (SCREEN_W//2 - hint_title.get_width()//2, SCREEN_H - 300))
-        start_y = SCREEN_H - 270
+        debuff_descriptions = {
+            "Choáng": "Không thể tấn công",
+            "Giảm Sát Thương": "Sát thương giảm 50%",
+            "Thiêu Đốt": "Mỗi giây mất 5 HP",
+            "Trọng Thương": "Nhận 50% sát thương thêm"
+        }
+        desc = debuff_descriptions.get(game.current_debuff_name, "")
+        hint_title = font_md.render(f"⚠️ {game.current_debuff_name}", True, C_RED)
+        hint_desc = font_xs.render(desc, True, C_ORANGE)
+        surf.blit(hint_title, (SCREEN_W//2 - hint_title.get_width()//2, SCREEN_H - 310))
+        surf.blit(hint_desc, (SCREEN_W//2 - hint_desc.get_width()//2, SCREEN_H - 285))
+        start_y = SCREEN_H - 250
     else:
         start_y = SCREEN_H - 300
 
@@ -1366,6 +1591,8 @@ class Game:
         self.boss_wrong_answers = 0
         self.current_debuff_type = None
         self.current_debuff_name = None
+        self.import_status = ""
+        self.import_status_timer = 0
         
         # Other attributes will be set in reset()
 
@@ -1736,10 +1963,17 @@ class Game:
         debuff_type = self.current_debuff_type or "stun"
         debuff_name = self.current_debuff_name or "Choáng"
         
+        debuff_descriptions = {
+            "Choáng": "Không thể tấn công",
+            "Giảm Sát Thương": "Sát thương giảm 50%",
+            "Thiêu Đốt": "Mỗi giây mất 5 HP",
+            "Trọng Thương": "Nhận 50% sát thương thêm"
+        }
+        
         if correct:
             # Đúng: debuff boss
             self.apply_debuff(self.enemy, debuff_type, 180)  # 3 giây tại 60 FPS
-            msg = f"✓ Boss bị {debuff_name}!"
+            msg = f"✓ Boss bị {debuff_name}: {debuff_descriptions.get(debuff_name, '')}!"
             color = C_GREEN
         else:
             self.boss_wrong_answers += 1
@@ -1749,7 +1983,7 @@ class Game:
 
             # Sai: debuff player
             self.apply_debuff(self.player, debuff_type, 180)
-            msg = f"✗ Bạn bị {debuff_name}!"
+            msg = f"✗ Bạn bị {debuff_name}: {debuff_descriptions.get(debuff_name, '')}!"
             color = C_RED
         
         # Hiển thị kết quả
@@ -1822,6 +2056,9 @@ class Game:
             self.add_float(self.enemy.x, self.enemy.y - 40, "STUN BLOCKED", C_CYAN, 22)
             self.spawn_particles(self.enemy.x, self.enemy.y, (120, 220, 255), 12)
             return
+        self.enemy.current_animation = "ATTACK"
+        self.enemy.current_frame = 0
+        self.enemy.frame_timer = 0
         atk = self.enemy.atk + random.randint(0, 5)
         # Áp dụng bleed multiplier của player
         actual_damage = int(atk * self.player.bleed_mult)
@@ -1859,6 +2096,12 @@ class Game:
             self.map_manager.update(self.player.x, self.player.y)
             if self.map_manager.editor:
                 self.map_manager.editor.update(pygame.mouse.get_pos())
+        
+        # Update import status timer
+        if self.import_status_timer > 0:
+            self.import_status_timer -= 1
+        else:
+            self.import_status = ""
         
         if self.state == GameState.MENU:
             return  # Don't update game objects in menu
@@ -1983,8 +2226,19 @@ class Game:
                 self.state = GameState.ROLLING
                 self.reset()
                 self.show_questions = False
-        elif self.menu_selected == 2:  # Câu hỏi
-            self.show_questions = True
+        elif self.menu_selected == 2:  # Tạo câu hỏi từ file
+            file_path = open_file_chooser()
+            if file_path:
+                imported = import_questions_from_file(file_path)
+                if imported:
+                    self.all_questions = imported
+                    if save_questions(imported):
+                        self.import_status = f"Thành công! Import {len(imported)} câu hỏi"
+                    else:
+                        self.import_status = "Lỗi lưu file"
+                else:
+                    self.import_status = "Không thể đọc file hoặc file không hợp lệ"
+                self.import_status_timer = 180  # 3 giây
         elif self.menu_selected == 3:  # Thoát
             pygame.event.post(pygame.event.Event(pygame.QUIT))
 
@@ -2002,16 +2256,13 @@ class Game:
             draw_surf = pygame.Surface((SCREEN_W, SCREEN_H))
 
         if self.state == GameState.MENU:
-            if self.show_questions:
-                draw_questions(draw_surf, self)
-            else:
                 # Vẽ tilemap TRƯỚC enemy/player
                 self.map_manager.draw(
                     draw_surf,
                     player_world_pos=(self.player.x, self.player.y) if self.player else None
                 )
                 # Giữ lại draw_background() nếu muốn kết hợp (castle, bats, cây...)
-                draw_menu(draw_surf, self.menu_selected, self.has_save)
+                draw_menu(draw_surf, self.menu_selected, self.has_save, self)
         else:
             # Draw game elements
             draw_background(draw_surf, self.frame, self.path_offset)
