@@ -2,63 +2,15 @@
   "questions": [
     {
       "id": 1,
-      "text": "Python được phát triển bởi ai?",
+      "text": "ÿþp\u0000y\u0000t\u0000h\u0000o\u0000n\u0000 \u0000:\u0000 \u0000P\u0000y\u0000t\u0000h\u0000o\u0000n\u0000 \u0000t\u0000\u0001\u0003m\u0000 \u0000t\u0000h\u0000",
       "options": [
-        "Guido van Rossum",
-        "Dennis Ritchie",
-        "Bjarne Stroustrup",
-        "James Gosling"
+        "\u0000",
+        "\u0000A\u0000t\u0000 \u0000l\u0000i\u0000n\u0000e\u0000:\u00001\u0000 \u0000c\u0000h\u0000a\u0000r\u0000:\u00001\u0000",
+        "\u0000",
+        "\u0000+\u0000 \u0000p\u0000y\u0000t\u0000h\u0000o\u0000n\u0000 \u0000m\u0000i\u0000n\u0000i\u0000m\u0000a\u0000l\u0000_\u0000t\u0000e\u0000s\u0000t\u0000.\u0000p\u0000y\u0000 \u0000>\u0000 \u0000t\u0000e\u0000s\u0000t\u0000_\u0000o\u0000u\u0000t\u0000p\u0000u\u0000t\u0000.\u0000t\u0000x\u0000t\u0000 \u00002\u0000>\u0000&\u00001\u0000"
       ],
       "correct": 0,
-      "reward": "Sát thương +50%"
-    },
-    {
-      "id": 2,
-      "text": "Năm nào Python được ra mắt?",
-      "options": [
-        "1989",
-        "1991",
-        "1995",
-        "2000"
-      ],
-      "correct": 1,
-      "reward": "Hồi máu 50HP"
-    },
-    {
-      "id": 3,
-      "text": "Pygame dùng để làm gì?",
-      "options": [
-        "Web framework",
-        "Game engine",
-        "Data analysis",
-        "Machine learning"
-      ],
-      "correct": 1,
-      "reward": "Sát thương +30%"
-    },
-    {
-      "id": 4,
-      "text": "FPS viết tắt của gì?",
-      "options": [
-        "First Person Shooter",
-        "Frames Per Second",
-        "File Processing System",
-        "Fast Processing Speed"
-      ],
-      "correct": 1,
-      "reward": "Khoá reroll miễn phí"
-    },
-    {
-      "id": 5,
-      "text": "Xúc xắc poker là gì?",
-      "options": [
-        "Một trò chơi bài",
-        "Một loại xúc xắc có 6 mặt",
-        "Kết hợp poker và xúc xắc",
-        "Một loại tiền tệ"
-      ],
-      "correct": 2,
-      "reward": "Tăng reroll +1"
+      "reward": "Sát thương +10%"
     }
   ]
 }

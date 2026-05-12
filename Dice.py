@@ -8,11 +8,16 @@ import random
 import math
 import sys
 import json
+import os
 from enum import Enum
 from tkinter import filedialog, Tk
 
 # --- TILEMAP SYSTEM ---
 from tilemap import MapManager
+
+# --- ANIMATION SYSTEM ---
+from enemy_attack_animation import EnemyAttackAnimator
+from enemy_projectile_animation import Projectile
 
 pygame.init()
 pygame.mixer.init()
@@ -156,13 +161,24 @@ def save_questions(questions):
 
 
 def open_file_chooser():
-    """Mở file dialog để chọn file từ máy."""
+    """Mở file dialog để chọn file câu hỏi từ máy.
+    
+    Hỗ trợ các định dạng:
+    - Text files (.txt)
+    - Word documents (.doc, .docx)
+    - Tất cả các file
+    """
     try:
         root = Tk()
         root.withdraw()  # Ẩn window chính của tkinter
         file_path = filedialog.askopenfilename(
-            title="Chọn file câu hỏi (.txt)",
-            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+            title="Chọn file câu hỏi (.txt, .doc, .docx)",
+            filetypes=[
+                ("Text files", "*.txt"),
+                ("Word documents", "*.doc"),
+                ("Word documents (2007+)", "*.docx"),
+                ("All files", "*.*")
+            ],
             initialdir="."
         )
         root.destroy()
@@ -172,9 +188,227 @@ def open_file_chooser():
         return None
 
 
+def is_file_empty(file_path: str) -> bool:
+    """Kiểm tra xem file có rỗng không.
+    
+    Args:
+        file_path: Đường dẫn file
+        
+    Returns:
+        True nếu file rỗng, False nếu có nội dung
+    """
+    try:
+        file_size = os.path.getsize(file_path)
+        return file_size == 0
+    except Exception:
+        return True
+
+
+def is_text_file(file_path: str) -> bool:
+    """Kiểm tra xem file có phải là file văn bản không.
+    
+    Hỗ trợ:
+    - File .txt (UTF-8, ASCII, Latin-1, cp1252, iso-8859-1)
+    - File .doc (Word 97-2003)
+    - File .docx (Word 2007+)
+    
+    Args:
+        file_path: Đường dẫn file
+        
+    Returns:
+        True nếu là file văn bản, False nếu là file nhị phân khác
+    """
+    try:
+        # Lấy phần mở rộng file
+        _, file_ext = os.path.splitext(file_path)
+        file_ext = file_ext.lower()
+        
+        # Kiểm tra loại file từ phần mở rộng
+        if file_ext in ['.txt']:
+            # Cố gắng đọc một số byte đầu để kiểm tra encoding
+            with open(file_path, 'rb') as f:
+                sample = f.read(1024)
+                
+            # Thử các encoding phổ biến
+            encodings_to_try = ['utf-8', 'utf-8-sig', 'latin-1', 'cp1252', 'iso-8859-1']
+            
+            for encoding in encodings_to_try:
+                try:
+                    sample.decode(encoding)
+                    return True
+                except UnicodeDecodeError:
+                    continue
+            
+            # Nếu không decode được với strict mode, có thể vẫn là text
+            # Thử với errors='ignore'
+            try:
+                decoded = sample.decode('utf-8', errors='ignore')
+                if decoded.strip():  # Có nội dung text
+                    return True
+            except:
+                pass
+                
+            return False
+                        
+        elif file_ext in ['.doc', '.docx']:
+            # Word documents được coi là file văn bản hợp lệ
+            return True
+        else:
+            # Cố gắng đọc file để kiểm tra
+            with open(file_path, 'rb') as f:
+                sample = f.read(512)
+                
+            # Kiểm tra xem có là text không
+            encodings_to_try = ['utf-8', 'latin-1', 'cp1252']
+            for encoding in encodings_to_try:
+                try:
+                    sample.decode(encoding)
+                    return True
+                except UnicodeDecodeError:
+                    continue
+            
+            return False
+    except Exception:
+        return False
+
+
+def extract_text_from_doc(file_path: str) -> str:
+    """Trích xuất text từ file .doc (Word 97-2003).
+    
+    Args:
+        file_path: Đường dẫn file .doc
+        
+    Returns:
+        Nội dung text từ file hoặc rỗng nếu lỗi
+    """
+    try:
+        # Thử sử dụng python-docx nếu có cài đặt (chỉ cho .docx)
+        import subprocess
+        result = subprocess.run(
+            [sys.executable, '-m', 'pip', 'show', 'python-docx'],
+            capture_output=True,
+            text=True
+        )
+        if result.returncode == 0:
+            # python-docx được cài đặt, sử dụng nó cho .docx
+            try:
+                from docx import Document
+                doc = Document(file_path)
+                text = '\n'.join([paragraph.text for paragraph in doc.paragraphs])
+                return text
+            except:
+                pass
+        
+        # Fallback: Sử dụng file reading thử - chỉ cho .txt
+        # Đây là fallback nếu không có thư viện
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            return f.read()
+    except Exception as e:
+        print(f"Lỗi trích xuất text từ .doc: {e}")
+        return ""
+
+
+def extract_text_from_docx(file_path: str) -> str:
+    """Trích xuất text từ file .docx (Word 2007+).
+    
+    Args:
+        file_path: Đường dẫn file .docx
+        
+    Returns:
+        Nội dung text từ file hoặc rỗng nếu lỗi
+    """
+    try:
+        from docx import Document
+        doc = Document(file_path)
+        text = '\n'.join([paragraph.text for paragraph in doc.paragraphs])
+        return text
+    except ImportError:
+        print("[WARN] python-docx library is not installed.")
+        print("   Install it with: pip install python-docx")
+        return ""
+    except Exception as e:
+        print(f"Lỗi trích xuất text từ .docx: {e}")
+        return ""
+
+
+def read_text_content(file_path: str) -> tuple[bool, str]:
+    """Đọc nội dung text từ file.
+    
+    Hỗ trợ: .txt, .doc, .docx
+    Thử nhiều encoding khác nhau để đọc file .txt
+    
+    Args:
+        file_path: Đường dẫn file
+        
+    Returns:
+        Tuple (success: bool, content: str)
+        - success: True nếu đọc thành công
+        - content: Nội dung text hoặc thông báo lỗi
+    """
+    try:
+        _, file_ext = os.path.splitext(file_path)
+        file_ext = file_ext.lower()
+        
+        if file_ext == '.txt':
+            # Thử nhiều encoding cho file .txt
+            encodings_to_try = ['utf-8', 'utf-8-sig', 'latin-1', 'cp1252', 'iso-8859-1']
+            
+            for encoding in encodings_to_try:
+                try:
+                    with open(file_path, 'r', encoding=encoding, errors='strict') as f:
+                        content = f.read()
+                    # Kiểm tra xem có phải là encoding đúng không (không có ký tự lạ)
+                    if '\ufffd' not in content:  # \ufffd là replacement character
+                        return True, content
+                except (UnicodeDecodeError, UnicodeError):
+                    continue
+            
+            # Nếu tất cả encoding đều fail, thử với errors='ignore'
+            try:
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    content = f.read()
+                if content.strip():  # Có nội dung
+                    return True, content
+            except Exception:
+                pass
+            
+            return False, "Không thể đọc file .txt với bất kỳ encoding nào được hỗ trợ"
+            
+        elif file_ext == '.docx':
+            content = extract_text_from_docx(file_path)
+            if content:
+                return True, content
+            else:
+                return False, "Không thể trích xuất text từ file .docx"
+                
+        elif file_ext == '.doc':
+            content = extract_text_from_doc(file_path)
+            if content:
+                return True, content
+            else:
+                return False, "Không thể trích xuất text từ file .doc"
+        else:
+            # Cố gắng đọc file khác
+            try:
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    content = f.read()
+                return True, content
+            except Exception as e:
+                return False, f"Lỗi đọc file: {str(e)}"
+            
+    except Exception as e:
+        return False, f"Lỗi đọc file: {str(e)}"
+
+
 def import_questions_from_file(file_path):
     """
-    Import câu hỏi từ file văn bản.
+    Import câu hỏi từ file văn bản hoặc Word document.
+    
+    Hỗ trợ:
+    - File .txt (UTF-8, ASCII, Latin-1)
+    - File .docx (Word 2007+)
+    - File .doc (Word 97-2003, cần python-docx)
+    
     Format:
     Câu hỏi?
     Option 1
@@ -182,84 +416,104 @@ def import_questions_from_file(file_path):
     Option 3
     Option 4
     Correct: 1
-    Reward: Tên reward
+    Reward: Tên reward   # Tùy chọn, sẽ bị bỏ qua khi import
     
-    [blank line]
+    [blank line] hoặc không có blank line giữa các câu hỏi
     
     Câu hỏi tiếp theo?
     ...
+    
+    Returns:
+        Danh sách câu hỏi (list[dict]) hoặc rỗng nếu lỗi
     """
     questions = []
+    
+    # ===== KIỂM TRA 1: File có rỗng không? =====
+    if is_file_empty(file_path):
+        print("[ERROR] File is empty. Please select a non-empty file.")
+        return []
+    
+    # ===== KIỂM TRA 2: File có phải văn bản không? =====
+    if not is_text_file(file_path):
+        print("[ERROR] File is not a supported text file. Supports .txt, .doc, .docx.")
+        return []
+    
+    # ===== ĐỌC NỘI DUNG FILE =====
+    success, content = read_text_content(file_path)
+    if not success:
+        print(f"[ERROR] {content}")
+        return []
+    
+    if not content or not content.strip():
+        print("[ERROR] File does not contain valid text content.")
+        return []
+    
+    # ===== XỬ LÝ NỘI DUNG =====
     try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            content = f.read()
-        
-        # Split by double newlines to get question blocks
-        blocks = content.strip().split("\n\n")
+        content = content.replace("\r\n", "\n").replace("\r", "\n")
+        lines = [line.strip() for line in content.split("\n")]
         next_id = 1
+        idx = 0
         
-        for block in blocks:
-            if not block.strip():
-                continue
+        while idx < len(lines):
+            # Skip empty lines between question blocks
+            while idx < len(lines) and not lines[idx]:
+                idx += 1
+            if idx >= len(lines):
+                break
             
-            lines = block.strip().split("\n")
-            if len(lines) < 7:  # Need at least: question, 4 options, correct, reward
-                continue
-            
-            question_text = lines[0].strip()
+            question_text = lines[idx]
+            idx += 1
             if not question_text:
                 continue
             
-            # Extract options
+            # Extract exactly 4 answer options
             options = []
-            line_idx = 1
-            for i in range(4):
-                if line_idx < len(lines):
-                    options.append(lines[line_idx].strip())
-                    line_idx += 1
+            while idx < len(lines) and len(options) < 4:
+                if lines[idx].lower().startswith("correct:"):
+                    break
+                if lines[idx]:
+                    options.append(lines[idx])
+                idx += 1
             
             if len(options) < 4:
                 continue
             
             # Extract correct answer
             correct_idx = 0
-            while line_idx < len(lines):
-                line = lines[line_idx].strip()
-                if line.lower().startswith("correct:"):
+            while idx < len(lines):
+                if lines[idx].lower().startswith("correct:"):
                     try:
-                        correct_idx = int(line.split(":")[-1].strip()) - 1  # Convert to 0-indexed
+                        correct_idx = int(lines[idx].split(":", 1)[1].strip()) - 1
                         if correct_idx < 0 or correct_idx >= 4:
                             correct_idx = 0
-                    except:
+                    except Exception:
                         correct_idx = 0
+                    idx += 1
                     break
-                line_idx += 1
+                idx += 1
+
+            # Skip optional reward lines if present
+            while idx < len(lines) and lines[idx].lower().startswith("reward:"):
+                idx += 1
             
-            # Extract reward
-            reward = "Sát thương +10%"
-            line_idx += 1
-            while line_idx < len(lines):
-                line = lines[line_idx].strip()
-                if line.lower().startswith("reward:"):
-                    reward = line.split(":", 1)[-1].strip()
-                    if not reward:
-                        reward = "Sát thương +10%"
-                    break
-                line_idx += 1
-            
-            question = {
+            questions.append({
                 "id": next_id,
                 "text": question_text,
                 "options": options,
-                "correct": correct_idx,
-                "reward": reward
-            }
-            questions.append(question)
+                "correct": correct_idx
+            })
             next_id += 1
         
+        if not questions:
+            print("[ERROR] No valid questions found in file.")
+            print("   Check file format against the sample file.")
+            return []
+        
+        print(f"[OK] Imported {len(questions)} questions.")
         return questions
     except Exception as e:
-        print(f"Lỗi import questions: {e}")
+        print(f"[ERROR] Import questions error: {e}")
         return []
 
 
@@ -794,22 +1048,41 @@ class Enemy:
         self.current_frame = 0
         self.frame_delays = {
             "IDLE": 15,
-            "ATTACK": 12  # Chậm hơn một chút cho attack
+            "ATTACK": 10  # 4 frame tấn công hướng xuống
         }
 
-        # Load enemy animations (6 frames mỗi animation)
+        # Load enemy animations (6 frames IDLE, 4 frames ATTACK)
         self.animations = {
             "IDLE": load_spritesheet("assets/enemy_idle.png", 6, self.sprite_width, self.sprite_height),
-            "ATTACK": load_spritesheet("assets/enemy_attack.png", 6, self.sprite_width, self.sprite_height)  # Giả sử frames gốc đã đứng thẳng hướng xuống
         }
         self.current_animation = "IDLE"
+        
+        # Attack animation từ EnemyAttackAnimator (4 frames)
+        self.attack_animator = EnemyAttackAnimator(
+            frame_width=self.sprite_width,
+            frame_height=self.sprite_height,
+            frame_duration=0.12  # ~0.12s mỗi frame cho attack
+        )
+        
+        # Projectile system
+        self.projectiles = []
+        self.attack_timer = 0
+        self.attack_cooldown = 3  # Bắn mỗi 3 giây
+        self.last_attack_frame = -1  # Track frame trước đó để tránh bắn nhiều lần
 
         if boss:
             # Boss version - lớn hơn
             self.sprite_width = 120
             self.sprite_height = 130
             self.animations["IDLE"] = [pygame.transform.scale(frame, (120, 130)) for frame in self.animations["IDLE"]]
-            self.animations["ATTACK"] = [pygame.transform.scale(frame, (120, 130)) for frame in self.animations["ATTACK"]]
+            # Re-initialize attack animator với kích thước boss
+            self.attack_animator = EnemyAttackAnimator(
+                frame_width=120,
+                frame_height=130,
+                frame_duration=0.12
+            )
+            # Boss bắn nhanh hơn
+            self.attack_cooldown = 2
 
     def take_damage(self, dmg, game=None):
         old_hp_percent = self.hp / self.max_hp
@@ -828,28 +1101,84 @@ class Enemy:
                     game.trigger_boss_question(milestone)
                     break
 
-    def update(self):
+    def update(self, dt=None, player=None, game=None):
+        if dt is None:
+            dt = 1.0 / FPS  # 60 FPS
+            
         self.frame += 1
         
-        # Cập nhật animation frame
-        self.frame_timer += 1
-        current_delay = self.frame_delays.get(self.current_animation, 10)
-        if self.frame_timer >= current_delay:
-            self.frame_timer = 0
-            self.current_frame += 1
-            anim_frames = len(self.animations.get(self.current_animation, []))
-            if anim_frames > 0 and self.current_frame >= anim_frames:
-                if self.current_animation == "ATTACK":
-                    self.current_animation = "IDLE"
-                self.current_frame = 0
+        # Cập nhật attack animation
+        if self.attack_animator.is_playing:
+            self.attack_animator.update(dt)
+            
+            # Bắn projectile ở frame 2 và 3 (0-indexed: frame 1 và 2)
+            current_attack_frame = self.attack_animator.current_frame
+            if current_attack_frame in [1, 2] and current_attack_frame != self.last_attack_frame and player:
+                self.fire_projectile(player.x, player.y)
+            self.last_attack_frame = current_attack_frame
+            
+            # Reset last_attack_frame khi animation kết thúc
+            if not self.attack_animator.is_playing:
+                self.last_attack_frame = -1
+        
+        # Cập nhật idle animation frame (chỉ nếu không attack)
+        if not self.attack_animator.is_playing:
+            self.frame_timer += 1
+            current_delay = self.frame_delays.get("IDLE", 15)
+            if self.frame_timer >= current_delay:
+                self.frame_timer = 0
+                self.current_frame += 1
+                idle_frames = len(self.animations.get("IDLE", []))
+                if idle_frames > 0 and self.current_frame >= idle_frames:
+                    self.current_frame = 0
         
         if self.hit_timer > 0:
             self.hit_timer -= 1
         if self.dead and self.death_timer > 0:
             self.death_timer -= 1
         
+        # Cập nhật projectile cooldown (chỉ nếu không chết) - DISABLED: giờ bắn theo attack animation
+        # if not self.dead and player:
+        #     self.attack_timer += dt
+        #     if self.attack_timer >= self.attack_cooldown:
+        #         self.fire_projectile(player.x, player.y)
+        #         self.attack_timer = 0
+        
+        # Cập nhật projectiles
+        for proj in self.projectiles:
+            proj.update(dt)
+            
+            # Kiểm tra va chạm với player
+            if proj.active and proj.get_rect().colliderect(player.get_rect()):
+                # Gây sát thương
+                actual_damage = int(proj.damage * player.bleed_mult)
+                player.hp = max(0, player.hp - actual_damage)
+                
+                # Hiển thị damage
+                game.add_float(player.x, player.y - 30, f"-{actual_damage}", (255, 100, 100), 20)
+                
+                # Tạo hiệu ứng particles
+                game.spawn_particles(player.x, player.y, (255, 100, 100), 8)
+                
+                # Deactivate projectile
+                proj.active = False
+                
+        self.projectiles = [p for p in self.projectiles if p.active]
+        
         # Cập nhật debuffs
         self.update_debuffs()
+
+    def fire_projectile(self, target_x, target_y):
+        """Bắn một quả đạn về phía player"""
+        projectile = Projectile(
+            x=self.x,
+            y=self.y,
+            target_x=target_x,
+            target_y=target_y,
+            speed=250,
+            damage=self.atk
+        )
+        self.projectiles.append(projectile)
 
     def update_debuffs(self):
         """Cập nhật các debuff và áp dụng hiệu ứng."""
@@ -887,7 +1216,7 @@ class Enemy:
         return pygame.Rect(self.x - self.sprite_width//2, self.y - self.sprite_height//2, 
                           self.sprite_width, self.sprite_height)
 
-    def draw(self, surf):
+    def draw(self, surf, player=None):
         bob = math.sin(self.frame * 0.05) * 4
         # Logic nháy đỏ khi trúng đòn
         blink = self.hit_timer > 0 and (self.hit_timer // 3) % 2 == 0
@@ -904,13 +1233,28 @@ class Enemy:
         pygame.draw.ellipse(sh, (0, 0, 0, 80), (0, 0, 50, 14))
         surf.blit(sh, (ex - 25, ey + 28))
 
-        # Lấy animation frame hiện tại
-        anim_frames = self.animations.get(self.current_animation, []) or self.animations.get("IDLE", [])
-        if anim_frames:
-            current_sprite = anim_frames[self.current_frame].copy()
+        # Lấy animation frame hiện tại - từ attack animator nếu đang tấn công, ngược lại từ idle
+        if self.attack_animator.is_playing:
+            current_sprite = self.attack_animator.get_current_frame()
+            if current_sprite is None:
+                # Fallback nếu frame không tồn tại
+                current_sprite = pygame.Surface((self.sprite_width, self.sprite_height), pygame.SRCALPHA)
+            else:
+                # Quay attack sprite hướng tới player
+                if player:
+                    angle = math.atan2(player.y - self.y, player.x - self.x)
+                    angle_deg = math.degrees(angle)
+                    # Rotate sprite để hướng tới player
+                    current_sprite = pygame.transform.rotate(current_sprite, -angle_deg + 90)
+                current_sprite = current_sprite.copy()
         else:
-            # Fallback nếu không có animation
-            current_sprite = pygame.Surface((self.sprite_width, self.sprite_height), pygame.SRCALPHA)
+            # Sử dụng idle animation
+            anim_frames = self.animations.get("IDLE", [])
+            if anim_frames:
+                current_sprite = anim_frames[self.current_frame].copy()
+            else:
+                # Fallback nếu không có animation
+                current_sprite = pygame.Surface((self.sprite_width, self.sprite_height), pygame.SRCALPHA)
         
         # Hiệu ứng nháy trắng/đỏ khi bị thương
         if blink:
@@ -919,8 +1263,8 @@ class Enemy:
         current_sprite.set_alpha(alpha)
         
         # Vẽ sprite (căn giữa)
-        sprite_offset_x = self.sprite_width // 2
-        sprite_offset_y = self.sprite_height // 2
+        sprite_offset_x = current_sprite.get_width() // 2
+        sprite_offset_y = current_sprite.get_height() // 2
         surf.blit(current_sprite, (ex - sprite_offset_x, ey - sprite_offset_y))
 
         # HP bar - Giữ nguyên logic hiển thị máu
@@ -1120,9 +1464,10 @@ class Player:
         sprite_rect = sprite.get_rect(center=(px + offset_x, py))
         surf.blit(sprite, sprite_rect)
         
-        # Vẽ hiệu ứng kiếm khí
-        for effect in self.sword_effects:
-            effect.draw(surf)
+    def get_rect(self) -> pygame.Rect:
+        """Lấy rect để kiểm tra va chạm"""
+        return pygame.Rect(self.x - self.sprite_width//2, self.y - self.sprite_height//2,
+                          self.sprite_width, self.sprite_height)
 
 
 # ==================== SCENE / BACKGROUND ====================
@@ -1971,9 +2316,10 @@ class Game:
         }
         
         if correct:
-            # Đúng: debuff boss
+            # Đúng: debuff boss và nhận phần thưởng ngẫu nhiên
             self.apply_debuff(self.enemy, debuff_type, 180)  # 3 giây tại 60 FPS
-            msg = f"✓ Boss bị {debuff_name}: {debuff_descriptions.get(debuff_name, '')}!"
+            reward_text = self.grant_random_question_reward()
+            msg = f"✓ Boss bị {debuff_name}! {reward_text}"
             color = C_GREEN
         else:
             self.boss_wrong_answers += 1
@@ -2008,6 +2354,31 @@ class Game:
             target.burn_damage = 5  # 5 damage per turn
         elif debuff_type == "bleed":
             target.bleed_mult = 1.5  # Nhận 50% damage hơn
+
+    def grant_random_question_reward(self):
+        """Cấp phần thưởng ngẫu nhiên khi trả lời đúng câu hỏi boss."""
+        def heal_reward():
+            heal_amount = 25
+            self.player.hp = min(self.player.max_hp, self.player.hp + heal_amount)
+            return f"Bạn hồi {heal_amount} HP!"
+
+        def reroll_reward():
+            self.max_rerolls += 1
+            self.rerolls += 1
+            return "Bạn nhận thêm 1 lượt reroll!"
+
+        def damage_reward():
+            self.player.damage_mult += 0.10
+            return "Sát thương tăng thêm 10%!"
+
+        def gold_reward():
+            gold_amount = 20
+            self.player.gold += gold_amount
+            return f"Bạn nhận thêm {gold_amount} vàng!"
+
+        rewards = [heal_reward, reroll_reward, damage_reward, gold_reward]
+        reward_fn = random.choice(rewards)
+        return reward_fn()
 
     def handle_boss_question_failure(self):
         """Xử lý khi trả lời sai quá 2 câu boss."""
@@ -2056,9 +2427,9 @@ class Game:
             self.add_float(self.enemy.x, self.enemy.y - 40, "STUN BLOCKED", C_CYAN, 22)
             self.spawn_particles(self.enemy.x, self.enemy.y, (120, 220, 255), 12)
             return
-        self.enemy.current_animation = "ATTACK"
-        self.enemy.current_frame = 0
-        self.enemy.frame_timer = 0
+        # Trigger attack animation
+        self.enemy.attack_animator.play()
+        self.enemy.last_attack_frame = -1  # Reset frame tracking
         atk = self.enemy.atk + random.randint(0, 5)
         # Áp dụng bleed multiplier của player
         actual_damage = int(atk * self.player.bleed_mult)
@@ -2091,6 +2462,9 @@ class Game:
         self.frame += 1
         self.path_offset += 1
         
+        # Calculate delta time
+        dt = 1.0 / FPS
+        
         # Cập nhật map (camera follow)
         if self.player:
             self.map_manager.update(self.player.x, self.player.y)
@@ -2107,7 +2481,7 @@ class Game:
             return  # Don't update game objects in menu
         
         self.player.update()
-        self.enemy.update()
+        self.enemy.update(dt, self.player, self)
 
         # Sword projectile collision
         self.check_sword_collisions()
@@ -2270,8 +2644,12 @@ class Game:
                 draw_surf,
                 player_world_pos=(self.player.x, self.player.y) if self.player else None
             )
-            self.enemy.draw(draw_surf)
+            self.enemy.draw(draw_surf, self.player)
             self.player.draw(draw_surf)
+
+            # Vẽ projectiles
+            for proj in self.enemy.projectiles:
+                proj.draw(draw_surf)
 
             for p in self.particles:
                 p.draw(draw_surf)
