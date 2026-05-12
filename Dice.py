@@ -1463,6 +1463,10 @@ class Player:
 
         sprite_rect = sprite.get_rect(center=(px + offset_x, py))
         surf.blit(sprite, sprite_rect)
+
+        # Vẽ hiệu ứng kiếm khí nếu có
+        for effect in self.sword_effects:
+            effect.draw(surf)
         
     def get_rect(self) -> pygame.Rect:
         """Lấy rect để kiểm tra va chạm"""
